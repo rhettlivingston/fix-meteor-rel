@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# Fix meteor bundle link to match this project's .meteor/release
+
+METEOR_WAREHOUSE_DIR="${METEOR_WAREHOUSE_DIR:-$HOME/.meteor}"
+
+command_exists () {
+  hash "$1" &> /dev/null
+}
+
+fixSymlink ()
+{
+  if [ ! -e "$METEOR_WAREHOUSE_DIR" ]; then
+    >&2 echo "error: Meteor installation not found. Please install."
+    return 1
+  fi
+
+  UNAME=$(uname)
+  if [ "$UNAME" != "Linux" -a "$UNAME" != "Darwin" ] ; then
+      >&2 echo "error: this OS, $UNAME, is not supported."
+      return 1
+  fi
+
+  if [ "$UNAME" = "Darwin" ] ; then
+      if [ "i386" != "$(uname -p)" -o "1" != "$(sysctl -n hw.cpu64bit_capable 2>/dev/null || echo 0)" ] ; then
+
+          # Can't just test uname -m = x86_64, because Snow Leopard can
+          # return other values.
+          >&2 echo "error: Only 64-bit Intel processors are supported at this time."
+          return 1
+      fi
+      HOST="osx"
+      ARCH="x86_64"
+  elif [ "$UNAME" = "Linux" ] ; then
+      ARCH="$(uname -m)"
+      if [ "$ARCH" != "i686" -a "$ARCH" != "x86_64" ] ; then
+          >&2 echo "error: Unsupported architecture: $ARCH"
+          >&2 echo "Meteor only supports i686 and x86_64 for now."
+          return 1
+      fi
+      HOST="linux"
+  fi
+  PLATFORM="os.${HOST}.${ARCH}"
+
+  # find .meteor/release if we're anywhere in the project dir.
+  ORIG_DIR="$(pwd)"
+  THIS_DIR="$(pwd)"
+  RELEASE_PATH=""
+  while true; do
+    if [ "$(pwd)" == "/" ]; then
+      RELEASE_PATH=".meteor/release"
+    else
+      RELEASE_PATH="$(pwd)/.meteor/release"
+    fi
+
+    if [ -f $RELEASE_PATH ]; then
+      break
+    fi
+
+    if [ "$(pwd)" == "/" ]; then
+      cd "$ORIG_DIR"
+      # There is no harm in executing meteor where no meteor project exists.
+      # They may very well be creating one!
+      return 0
+    fi
+
+    cd ..
+  done
+  cd "$ORIG_DIR"
+
+  if [ ! -f $RELEASE_PATH ] ; then
+    # There is no harm in executing meteor where no meteor project exists.
+    # They may very well be creating one!
+    return 0
+  fi
+
+  release=($(sed -e 's/@/ /' .meteor/release))
+  track=${release[0]}
+  version=${release[1]}
+  if ! command_exists sqlite3 ; then
+    >&2 echo "error: $0 requires sqlite3. Please install."
+    return 1
+  fi
+  if ! command_exists jq ; then
+    >&2 echo "error: $0 requires jq. Please install."
+    return 1
+  fi
+  tool=($(sqlite3 ~/.meteor/package-metadata/v2.0.1/packages.data.db "select content from releaseVersions where track='${track}' and version='${version}'" | jq .tool | sed -e 's/^"//;s/"$//;s/@/ /'))
+
+  oldLink=$(ls -l ~/.meteor/meteor | sed -e's/^.*-> //')
+  newLink="packages/meteor-tool/${tool[1]}/mt-${PLATFORM}/meteor"
+  if [ "$oldLink" != "$newLink" ] ; then
+    echo changing to Meteor $version bundle: "$newLink"
+    ORIG_DIR="$(pwd)"
+    cd "$METEOR_WAREHOUSE_DIR"
+    ln -sf ${newLink} ./
+    cd "$ORIG_DIR"
+  else
+    echo Meteor bundle is correct for $version: "$oldLink"
+  fi
+  return 0
+}
+
+if fixSymlink ; then
+  exec "$METEOR_WAREHOUSE_DIR/meteor" "$@"
+fi
